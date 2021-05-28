@@ -44,6 +44,10 @@ import be.nabu.utils.mime.api.Part;
 import nabu.web.renderer2.types.ExecuteResult;
 import nabu.web.renderer2.types.ExecuteResult.LifeCycleResult;
 
+/**
+ * TODO:
+ * Need a global timeout: some pages don't end up in the correct lifecycle states (die early?), the service will simply run forever...
+ */
 @WebService
 public class Services {
 		
@@ -72,185 +76,215 @@ public class Services {
 	// than we can do some performance testing as well!
 	public ExecuteResult execute(@WebParam(name = "method") String method, 
 			@NotNull @WebParam(name = "url") URI url, @WebParam(name = "part") Part part, @WebParam(name = "javascript") String javascript,
-			@WebParam(name = "timeout") Long timeout) {
+			@WebParam(name = "timeout") Long timeout, @WebParam(name = "timeoutUnit") TimeUnit timeUnit) {
 		
-		// not sure if this will work when doing stuff like websockets or frequent polling or...
-		boolean waitForNetworkIdle = true;
-		
-		// Create chrome launcher.
-	    final ChromeLauncher launcher = new ChromeLauncher();
-	    
-	    ChromeArguments arguments = ChromeArguments.builder()
-	    		.headless(true)
-	    		.additionalArguments("user-agent", "Nabu-Renderer/1.1")
-	    		.build();
-	    // Launch chrome either as headless (true) or regular (false).
-//	    ChromeService chromeService = launcher.launch(true);
-	    ChromeService chromeService = launcher.launch(arguments);
-	    
-	    // Create empty tab ie about:blank.
-	    ChromeTab tab = chromeService.createTab();
-	    
-		// Get DevTools service to this tab
-	    ChromeDevToolsService devToolsService = chromeService.createDevToolsService(tab);
-	    
-	    devToolsService.getConsole().enable();
-	    devToolsService.getConsole().onMessageAdded(new EventHandler<MessageAdded>() {
-			@Override
-			public void onEvent(MessageAdded arg0) {
-				System.out.println("> " + arg0.getMessage().getText());
-			}
-	    });
-	    
-	    devToolsService.getLog().enable();
-	    devToolsService.getLog().onEntryAdded(new EventHandler<EntryAdded>() {
-			@Override
-			public void onEvent(EntryAdded arg0) {
-				System.out.println(">> " + arg0.getEntry().getText());
-			}
-	    });
-	    
-		// Get individual commands
-		Page page = devToolsService.getPage();
-		Network network = devToolsService.getNetwork();
-		
-		Tracing tracing = devToolsService.getTracing();
-		tracing.onDataCollected(
-		        event -> {
-		          if (event.getValue() != null) {
-		            System.out.println("----------------------------> trace: " + event.getValue());
-		          }
-		        });
-		tracing.start();
-		
-		if (javascript != null) {
-//			page.addScriptToEvaluateOnLoad(javascript);
-			page.addScriptToEvaluateOnNewDocument(javascript);
-		}
-		// Log requests with onRequestWillBeSent event handler.
-		network.onRequestWillBeSent(new EventHandler<RequestWillBeSent>() {
-			@Override
-			public void onEvent(RequestWillBeSent event) {
-				System.out.printf(
-						"request: %s %s%s",
-						event.getRequest().getMethod(),
-						event.getRequest().getUrl(),
-						System.lineSeparator());
-			}
-		});
-
-//		network.onLoadingFinished(new EventHandler<LoadingFinished>() {
-//			@Override
-//			public void onEvent(LoadingFinished arg0) {
-//				// get html content
-//				Runtime runtime = devToolsService.getRuntime();
-//				Evaluate evaluation = runtime.evaluate("document.documentElement.outerHTML");
-//				result.add((String) evaluation.getResult().getValue());
-//				// Close the tab and close the browser when loading finishes.
-//				chromeService.closeTab(tab);
-//				launcher.close();
-//			}
-//		});
-		
-		network.onRequestIntercepted(new EventHandler<RequestIntercepted>() {
-			@Override
-			public void onEvent(RequestIntercepted event) {
-				String interceptionId = event.getInterceptionId();
-				Map<String, Object> headers = new HashMap<String, Object>();
-			}
-		});
-		
-		ExecuteResult result = new ExecuteResult();
-		
-		page.setLifecycleEventsEnabled(true);
-		List<Boolean> state = new ArrayList<Boolean>();
-		
-		
-		String targetState = "firstMeaningfulPaint";
-//		String targetState = "firstContentfulPaint";
-//		String targetState = "firstPaint";
-		/*
-		 	----------> lifecycle: init
-			----------> lifecycle: DOMContentLoaded
-			----------> lifecycle: load
-			----------> lifecycle: firstPaint
-			----------> lifecycle: firstContentfulPaint
-			----------> lifecycle: firstImagePaint
-			----------> lifecycle: firstMeaningfulPaintCandidate
-			----------> lifecycle: networkAlmostIdle
-			----------> lifecycle: firstMeaningfulPaint
-			----------> lifecycle: networkIdle
-		 */
-		Date started = new Date();
-		page.onLifecycleEvent(new EventHandler<LifecycleEvent>() {
-			@Override
-			public void onEvent(LifecycleEvent arg0) {
-				System.out.println("--------------> lifecycle: " + arg0.getName());
-				LifeCycleResult lifeCycle = new LifeCycleResult();
-				lifeCycle.setName(arg0.getName());
-				lifeCycle.setTime(new Date().getTime() - started.getTime());
-				result.getLifeCycle().add(lifeCycle);
-				
-				boolean stop = false;
-				// we wait for the meaningfulcontent
-				if (targetState.equals(arg0.getName())) {
-					if (waitForNetworkIdle) {
-						state.add(true);
-					}
-					else {
-						stop = true;
-					}
+		try {
+			// not sure if this will work when doing stuff like websockets or frequent polling or...
+			boolean waitForNetworkIdle = true;
+			
+			// Create chrome launcher.
+		    final ChromeLauncher launcher = new ChromeLauncher();
+		    
+		    CountDownLatch latch = new CountDownLatch(1);
+		    
+		    ChromeArguments arguments = ChromeArguments.builder()
+		    		.headless(true)
+		    		.additionalArguments("user-agent", "Nabu-Renderer/1.1")
+		    		.additionalArguments("no-sandbox", true)
+		    		.build();
+		    // Launch chrome either as headless (true) or regular (false).
+	//	    ChromeService chromeService = launcher.launch(true);
+		    ChromeService chromeService = launcher.launch(arguments);
+		    
+		    // Create empty tab ie about:blank.
+		    ChromeTab tab = chromeService.createTab();
+		    
+			// Get DevTools service to this tab
+		    ChromeDevToolsService devToolsService = chromeService.createDevToolsService(tab);
+		    
+		    devToolsService.getConsole().enable();
+		    devToolsService.getConsole().onMessageAdded(new EventHandler<MessageAdded>() {
+				@Override
+				public void onEvent(MessageAdded arg0) {
+					System.out.println("> " + arg0.getMessage().getText());
 				}
-				else if (waitForNetworkIdle && "networkIdle".equals(arg0.getName()) && !state.isEmpty()) {
-					stop = true;
+		    });
+		    
+		    devToolsService.getLog().enable();
+		    devToolsService.getLog().onEntryAdded(new EventHandler<EntryAdded>() {
+				@Override
+				public void onEvent(EntryAdded arg0) {
+					System.out.println(">> " + arg0.getEntry().getText());
 				}
-				if (stop) {
+		    });
+		    
+			// Get individual commands
+			Page page = devToolsService.getPage();
+			Network network = devToolsService.getNetwork();
+			
+			Tracing tracing = devToolsService.getTracing();
+			tracing.onDataCollected(
+			        event -> {
+			          if (event.getValue() != null) {
+			            System.out.println("----------------------------> trace: " + event.getValue());
+			          }
+			        });
+			tracing.start();
+			
+			if (javascript != null) {
+	//			page.addScriptToEvaluateOnLoad(javascript);
+				page.addScriptToEvaluateOnNewDocument(javascript);
+			}
+			// Log requests with onRequestWillBeSent event handler.
+			network.onRequestWillBeSent(new EventHandler<RequestWillBeSent>() {
+				@Override
+				public void onEvent(RequestWillBeSent event) {
+					System.out.printf(
+							"request: %s %s%s",
+							event.getRequest().getMethod(),
+							event.getRequest().getUrl(),
+							System.lineSeparator());
+				}
+			});
+	
+	//		network.onLoadingFinished(new EventHandler<LoadingFinished>() {
+	//			@Override
+	//			public void onEvent(LoadingFinished arg0) {
+	//				// get html content
+	//				Runtime runtime = devToolsService.getRuntime();
+	//				Evaluate evaluation = runtime.evaluate("document.documentElement.outerHTML");
+	//				result.add((String) evaluation.getResult().getValue());
+	//				// Close the tab and close the browser when loading finishes.
+	//				chromeService.closeTab(tab);
+	//				launcher.close();
+	//			}
+	//		});
+			
+			network.onRequestIntercepted(new EventHandler<RequestIntercepted>() {
+				@Override
+				public void onEvent(RequestIntercepted event) {
+					String interceptionId = event.getInterceptionId();
+					Map<String, Object> headers = new HashMap<String, Object>();
+				}
+			});
+			
+			ExecuteResult result = new ExecuteResult();
+			
+			page.setLifecycleEventsEnabled(true);
+			List<Boolean> state = new ArrayList<Boolean>();
+			
+			
+			String targetState = "firstMeaningfulPaint";
+	//		String targetState = "firstContentfulPaint";
+	//		String targetState = "firstPaint";
+			/*
+			 	----------> lifecycle: init
+				----------> lifecycle: DOMContentLoaded
+				----------> lifecycle: load
+				----------> lifecycle: firstPaint
+				----------> lifecycle: firstContentfulPaint
+				----------> lifecycle: firstImagePaint
+				----------> lifecycle: firstMeaningfulPaintCandidate
+				----------> lifecycle: networkAlmostIdle
+				----------> lifecycle: firstMeaningfulPaint
+				----------> lifecycle: networkIdle
+			 */
+			Date started = new Date();
+			page.onLifecycleEvent(new EventHandler<LifecycleEvent>() {
+				@Override
+				public void onEvent(LifecycleEvent arg0) {
 					try {
-						Thread.sleep(5000);
-					} catch (InterruptedException e) {
-						// TODO Auto-generated catch block
+						System.out.println("--------------> lifecycle: " + arg0.getName());
+						LifeCycleResult lifeCycle = new LifeCycleResult();
+						lifeCycle.setName(arg0.getName());
+						lifeCycle.setTime(new Date().getTime() - started.getTime());
+						result.getLifeCycle().add(lifeCycle);
+						
+						boolean stop = false;
+						// we wait for the meaningfulcontent
+						if (targetState.equals(arg0.getName())) {
+							if (waitForNetworkIdle) {
+								state.add(true);
+							}
+							else {
+								stop = true;
+							}
+						}
+						else if (waitForNetworkIdle && "networkIdle".equals(arg0.getName()) && !state.isEmpty()) {
+							stop = true;
+						}
+						if (stop) {
+	//						try {
+	//							Thread.sleep(5000);
+	//						} catch (InterruptedException e) {
+	//							// TODO Auto-generated catch block
+	//							e.printStackTrace();
+	//						}
+							try {
+								Runtime runtime = devToolsService.getRuntime();
+								// we explicitly try to clear all the templates, this is relevant for our own applications, less so for others
+								try {
+									runtime.evaluate("window.clearTemplates()");
+								}
+								catch (Exception e) {
+									// doesn't matter if it failed...
+									e.printStackTrace();
+								}
+								Evaluate evaluation = runtime.evaluate("document.documentElement.outerHTML");
+								result.setContent((String) evaluation.getResult().getValue());
+								// Close the tab and close the browser when loading finishes.
+								chromeService.closeTab(tab);
+								launcher.close();
+							}
+							finally {
+								latch.countDown();
+							}
+						}
+					}
+					catch (Throwable e) {
 						e.printStackTrace();
 					}
-					Runtime runtime = devToolsService.getRuntime();
-					// we explicitly try to clear all the templates, this is relevant for our own applications, less so for others
-					runtime.evaluate("window.clearTemplates()");
-					Evaluate evaluation = runtime.evaluate("document.documentElement.outerHTML");
-					result.setContent((String) evaluation.getResult().getValue());
-					// Close the tab and close the browser when loading finishes.
-					chromeService.closeTab(tab);
-					launcher.close();
 				}
+			});
+			
+	//		page.onLoadEventFired(new EventHandler<LoadEventFired>() {
+	//			@Override
+	//			public void onEvent(LoadEventFired arg0) {
+	//				// get html content
+	//				Runtime runtime = devToolsService.getRuntime();
+	//				// manually trigger the load event?
+	//				Evaluate load = runtime.evaluate("window.dispatchEvent(new Event('load'))");
+	//				Evaluate evaluation = runtime.evaluate("document.documentElement.outerHTML");
+	//				result.add((String) evaluation.getResult().getValue());
+	//				// Close the tab and close the browser when loading finishes.
+	//				chromeService.closeTab(tab);
+	//				launcher.close();
+	//			}
+	//		});
+	
+			// TODO: inject server side rendering headers?
+			
+			// Enable network events.
+			network.enable();
+			
+			// enable page events
+			page.enable();
+			
+			page.navigate(url.toString());
+	
+//			devToolsService.waitUntilClosed();
+			if (timeout == null) {
+				timeout = 30l;
+				timeUnit = TimeUnit.SECONDS;
 			}
-		});
-		
-//		page.onLoadEventFired(new EventHandler<LoadEventFired>() {
-//			@Override
-//			public void onEvent(LoadEventFired arg0) {
-//				// get html content
-//				Runtime runtime = devToolsService.getRuntime();
-//				// manually trigger the load event?
-//				Evaluate load = runtime.evaluate("window.dispatchEvent(new Event('load'))");
-//				Evaluate evaluation = runtime.evaluate("document.documentElement.outerHTML");
-//				result.add((String) evaluation.getResult().getValue());
-//				// Close the tab and close the browser when loading finishes.
-//				chromeService.closeTab(tab);
-//				launcher.close();
-//			}
-//		});
+			latch.await(timeout, timeUnit == null ? TimeUnit.MILLISECONDS : timeUnit);
 
-		// TODO: inject server side rendering headers?
-		
-		// Enable network events.
-		network.enable();
-		
-		// enable page events
-		page.enable();
-		
-		page.navigate(url.toString());
-
-		devToolsService.waitUntilClosed();
-
-		return result;
+			return result;
+		}
+		catch (Throwable e) {
+			e.printStackTrace();
+			throw new RuntimeException(e);
+		}
 //		page.addScriptToEvaluateOnLoad(arg0)
 //		page.addScriptToEvaluateOnNewDocument(arg0)
 	}
