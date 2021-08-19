@@ -1,7 +1,10 @@
 package nabu.web.renderer2;
 
+import java.io.ByteArrayOutputStream;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -16,6 +19,7 @@ import javax.validation.constraints.NotNull;
 
 import com.github.kklisura.cdt.launch.ChromeArguments;
 import com.github.kklisura.cdt.launch.ChromeLauncher;
+import com.github.kklisura.cdt.protocol.commands.IO;
 import com.github.kklisura.cdt.protocol.commands.Network;
 import com.github.kklisura.cdt.protocol.commands.Page;
 import com.github.kklisura.cdt.protocol.commands.Runtime;
@@ -28,6 +32,9 @@ import com.github.kklisura.cdt.protocol.events.network.RequestWillBeSent;
 import com.github.kklisura.cdt.protocol.events.page.LifecycleEvent;
 import com.github.kklisura.cdt.protocol.events.page.LoadEventFired;
 import com.github.kklisura.cdt.protocol.support.types.EventHandler;
+import com.github.kklisura.cdt.protocol.types.io.Read;
+import com.github.kklisura.cdt.protocol.types.page.PrintToPDF;
+import com.github.kklisura.cdt.protocol.types.page.PrintToPDFTransferMode;
 import com.github.kklisura.cdt.protocol.types.runtime.Evaluate;
 import com.github.kklisura.cdt.services.ChromeDevToolsService;
 import com.github.kklisura.cdt.services.ChromeService;
@@ -72,11 +79,16 @@ public class Services {
 //		}
 //	}
 	
+	// 3 modes: check if page builder application -> use frontend setting to determine when rendering is done?
+	// if not page builder, either we go for a certain target state and/or a timeout to be triggered at which point we send back whatever is there?
+	// allow a random script to be evaluated to determine load is done?
+	
 	// TODO: return timing values as well
 	// than we can do some performance testing as well!
 	public ExecuteResult execute(@WebParam(name = "method") String method, 
 			@NotNull @WebParam(name = "url") URI url, @WebParam(name = "part") Part part, @WebParam(name = "javascript") String javascript,
-			@WebParam(name = "timeout") Long timeout, @WebParam(name = "timeoutUnit") TimeUnit timeUnit) {
+			@WebParam(name = "timeout") Long timeout, @WebParam(name = "timeoutUnit") TimeUnit timeUnit,
+			@WebParam(name = "asPdf") Boolean asPdf) {
 		
 		try {
 			// not sure if this will work when doing stuff like websockets or frequent polling or...
@@ -174,8 +186,8 @@ public class Services {
 			List<Boolean> state = new ArrayList<Boolean>();
 			
 			
-			String targetState = "firstMeaningfulPaint";
-	//		String targetState = "firstContentfulPaint";
+//			String targetState = "firstMeaningfulPaint";
+			String targetState = "firstContentfulPaint";
 	//		String targetState = "firstPaint";
 			/*
 			 	----------> lifecycle: init
@@ -200,48 +212,67 @@ public class Services {
 						lifeCycle.setTime(new Date().getTime() - started.getTime());
 						result.getLifeCycle().add(lifeCycle);
 						
-						boolean stop = false;
-						// we wait for the meaningfulcontent
-						if (targetState.equals(arg0.getName())) {
-							if (waitForNetworkIdle) {
-								state.add(true);
-							}
-							else {
-								stop = true;
-							}
-						}
-						else if (waitForNetworkIdle && "networkIdle".equals(arg0.getName()) && !state.isEmpty()) {
-							stop = true;
-						}
-						if (stop) {
-	//						try {
-	//							Thread.sleep(5000);
-	//						} catch (InterruptedException e) {
-	//							// TODO Auto-generated catch block
-	//							e.printStackTrace();
-	//						}
-							try {
-								Runtime runtime = devToolsService.getRuntime();
-								// we explicitly try to clear all the templates, this is relevant for our own applications, less so for others
-								try {
-									runtime.evaluate("window.clearTemplates()");
-								}
-								catch (Exception e) {
-									// doesn't matter if it failed...
-									e.printStackTrace();
-								}
-								Evaluate evaluation = runtime.evaluate("document.documentElement.outerHTML");
-								result.setContent((String) evaluation.getResult().getValue());
-								// Close the tab and close the browser when loading finishes.
-								chromeService.closeTab(tab);
-								launcher.close();
-							}
-							finally {
-								latch.countDown();
-							}
-						}
+//						boolean stop = false;
+//						// we wait for the meaningfulcontent
+//						if (targetState.equals(arg0.getName())) {
+//							if (waitForNetworkIdle) {
+//								state.add(true);
+//							}
+//							else {
+//								stop = true;
+//							}
+//						}
+//						else if (waitForNetworkIdle && "networkIdle".equals(arg0.getName()) && !state.isEmpty()) {
+//							stop = true;
+//						}
+//						if (stop) {
+//	//						try {
+//	//							Thread.sleep(5000);
+//	//						} catch (InterruptedException e) {
+//	//							// TODO Auto-generated catch block
+//	//							e.printStackTrace();
+//	//						}
+//							try {
+//								Runtime runtime = devToolsService.getRuntime();
+//								// we explicitly try to clear all the templates, this is relevant for our own applications, less so for others
+//								try {
+//									runtime.evaluate("window.clearTemplates()");
+//								}
+//								catch (Exception e) {
+//									// doesn't matter if it failed...
+//									e.printStackTrace();
+//								}
+//								Evaluate evaluation = runtime.evaluate("document.documentElement.outerHTML");
+//								result.setContent((String) evaluation.getResult().getValue());
+//								// Close the tab and close the browser when loading finishes.
+//								chromeService.closeTab(tab);
+//								devToolsService.close();
+//								launcher.close();
+//							}
+//							finally {
+//								latch.countDown();
+//							}
+//						}
 					}
 					catch (Throwable e) {
+						e.printStackTrace();
+					}
+				}
+			});
+			
+			// we check if it is page builder
+			page.onLoadEventFired(new EventHandler<LoadEventFired>() {
+				@Override
+				public void onEvent(LoadEventFired arg0) {
+					Runtime runtime = devToolsService.getRuntime();
+					try {
+						// we need the property "stable" in the page builder to make sure we have the latest version
+						Evaluate evaluation = runtime.evaluate("application && application.services && application.services.page && application.services.page.hasOwnProperty(\"stable\")");
+						// if we have an object, it is page builder
+						result.setPageBuilder(Boolean.TRUE.equals(evaluation.getResult().getValue()));
+					}
+					catch (Exception e) {
+						// doesn't matter if it failed...
 						e.printStackTrace();
 					}
 				}
@@ -267,17 +298,120 @@ public class Services {
 			// Enable network events.
 			network.enable();
 			
+//			page.onLoadEventFired(new EventHandler<LoadEventFired>() {
+//				@Override
+//				public void onEvent(LoadEventFired arg0) {
+//					System.out.println("**** 2 Closing dev tools on load");
+//					devToolsService.close();
+//				}
+//			});
+			
 			// enable page events
 			page.enable();
 			
 			page.navigate(url.toString());
-	
+			
 //			devToolsService.waitUntilClosed();
+			
 			if (timeout == null) {
 				timeout = 30l;
 				timeUnit = TimeUnit.SECONDS;
 			}
-			latch.await(timeout, timeUnit == null ? TimeUnit.MILLISECONDS : timeUnit);
+			else if (timeUnit == null) {
+				timeUnit = TimeUnit.MILLISECONDS;
+			}
+			
+//			latch.await(timeout, timeUnit == null ? TimeUnit.MILLISECONDS : timeUnit);
+			
+			Runtime runtime = devToolsService.getRuntime();
+			waitForStable(page, runtime, TimeUnit.MILLISECONDS.convert(timeout, timeUnit), result);
+			
+			if (asPdf != null && asPdf) {
+				Boolean landscape = false;
+				Boolean displayHeaderFooter = false;
+				Boolean printBackground = true;
+				Double scale = 1d;
+				Double paperWidth = 8.27d; // A4 paper format
+				Double paperHeight = 11.7d; // A4 paper format
+				Double marginTop = 0d;
+				Double marginBottom = 0d;
+				Double marginLeft = 0d;
+				Double marginRight = 0d;
+				String pageRanges = "";
+				Boolean ignoreInvalidPageRanges = false;
+				String headerTemplate = "";
+				String footerTemplate = "";
+				Boolean preferCSSPageSize = false;
+				PrintToPDFTransferMode mode = PrintToPDFTransferMode.RETURN_AS_STREAM;
+				PrintToPDF printToPDF = page.printToPDF(landscape,
+					displayHeaderFooter,
+					printBackground,
+					scale,
+					paperWidth,
+					paperHeight,
+					marginTop,
+					marginBottom,
+					marginLeft,
+					marginRight,
+					pageRanges,
+					ignoreInvalidPageRanges,
+					headerTemplate,
+					footerTemplate,
+					preferCSSPageSize,
+					mode);
+				IO io = devToolsService.getIO();
+				int offset = 0;
+				ByteArrayOutputStream output = new ByteArrayOutputStream();
+				try {
+					int READ_BUFFER_SIZE = 1048576;
+					do {
+						final Read read = io.read(printToPDF.getStream(), offset, READ_BUFFER_SIZE);
+						if (read.getBase64Encoded() == Boolean.TRUE) {
+							byte[] decode = Base64.getDecoder().decode(read.getData());
+							offset += decode.length;
+							output.write(decode);
+						} 
+						else {
+							byte[] decode = read.getData().getBytes(StandardCharsets.UTF_8);
+							offset += decode.length;
+							output.write(decode);
+						}
+						if (read.getEof() == Boolean.TRUE) {
+							break;
+						}
+					}
+					while (true);
+					result.setPdf(output.toByteArray());
+				}
+				catch (Exception e) {
+					e.printStackTrace();
+				}
+				finally {
+					try {
+						io.close(printToPDF.getStream());
+					}
+					catch (Exception e) {
+						e.printStackTrace();
+					}
+				}
+			}
+			else {
+				// we explicitly try to clear all the templates, this is relevant for our own applications, less so for others
+				try {
+					runtime.evaluate("window.clearTemplates()");
+				}
+				catch (Exception e) {
+					// doesn't matter if it failed...
+					e.printStackTrace();
+				}
+				
+				Evaluate evaluation = runtime.evaluate("document.documentElement.outerHTML");
+				result.setContent((String) evaluation.getResult().getValue());
+			}
+			// Close the tab and close the browser when loading finishes.
+			chromeService.closeTab(tab);
+			devToolsService.close();
+			launcher.close();
 
 			return result;
 		}
@@ -287,6 +421,63 @@ public class Services {
 		}
 //		page.addScriptToEvaluateOnLoad(arg0)
 //		page.addScriptToEvaluateOnNewDocument(arg0)
+	}
+	
+	public static ExecuteResult waitForStable(Page page, Runtime runtime, Long timeout, ExecuteResult result) {
+//		String targetState = "firstMeaningfulPaint";
+		String targetState = "firstContentfulPaint";
+//		String targetState = "firstPaint";
+		
+		boolean waitForIdle = true;
+		result.setRenderStart(new Date());
+		try {
+			boolean concluded = false;
+			while(!concluded) {
+				// we give it some time
+				Thread.sleep(100);
+				
+				if (result.isPageBuilder()) {
+					Evaluate evaluation = runtime.evaluate("application.services.page.stable");
+					result.setStable(Boolean.TRUE.equals(evaluation.getResult().getValue()));
+				}
+
+				boolean idle = false;
+				boolean loaded = false;
+				// check if we reached the target state
+				List<LifeCycleResult> lifeCycles = result.getLifeCycle();
+				if (lifeCycles != null && !lifeCycles.isEmpty()) {
+					lifeCycles = new ArrayList<LifeCycleResult>(lifeCycles);
+					for (LifeCycleResult cycle : lifeCycles) {
+						if (cycle.getName().equalsIgnoreCase(targetState)) {
+							result.setStable(true);
+						}
+						else if (cycle.getName().equalsIgnoreCase("load")) {
+							loaded = true;
+						}
+						// only network idles _after_ the load count
+						else if (loaded && cycle.getName().equalsIgnoreCase("networkIdle")) {
+							idle = true;
+						}
+					}
+				}
+				if (timeout != null && new Date().getTime() - result.getRenderStart().getTime() > timeout) {
+					break;
+				}
+				
+				// if we wait for an idle, we wait after it has been stabilized for a network idle event
+				if (waitForIdle) {
+					concluded = result.isStable() && idle;
+				}
+				else {
+					concluded = result.isStable();
+				}
+			}
+		}
+		catch (Exception e) {
+			e.printStackTrace();
+		}
+		result.setRenderStop(new Date());
+		return result;
 	}
 	
 //	public String execute2(@WebParam(name = "method") String method, 
