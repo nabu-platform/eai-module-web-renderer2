@@ -424,8 +424,8 @@ public class Services {
 	}
 	
 	public static ExecuteResult waitForStable(Page page, Runtime runtime, Long timeout, ExecuteResult result) {
-//		String targetState = "firstMeaningfulPaint";
-		String targetState = "firstContentfulPaint";
+		String targetState = "firstMeaningfulPaint";
+//		String targetState = "firstContentfulPaint";
 //		String targetState = "firstPaint";
 		
 		boolean waitForIdle = true;
