@@ -9,7 +9,8 @@ public class ExecuteResult {
 	private byte[] pdf;
 	private List<LifeCycleResult> lifeCycle = new ArrayList<LifeCycleResult>();
 	private boolean pageBuilder, stable;
-	private Date renderStart, renderStop;
+	private Date renderStart, renderReady, renderStop;
+	private String consoleLog;
 	public static class LifeCycleResult {
 		private String name;
 		private long time;
@@ -67,5 +68,17 @@ public class ExecuteResult {
 	}
 	public void setPdf(byte[] pdf) {
 		this.pdf = pdf;
+	}
+	public Date getRenderReady() {
+		return renderReady;
+	}
+	public void setRenderReady(Date renderReady) {
+		this.renderReady = renderReady;
+	}
+	public String getConsoleLog() {
+		return consoleLog;
+	}
+	public void setConsoleLog(String consoleLog) {
+		this.consoleLog = consoleLog;
 	}
 }

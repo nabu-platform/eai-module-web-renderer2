@@ -83,13 +83,30 @@ public class Services {
 	// if not page builder, either we go for a certain target state and/or a timeout to be triggered at which point we send back whatever is there?
 	// allow a random script to be evaluated to determine load is done?
 	
+	public enum RenderLifeCycle {
+		// can't wait for init
+//		init,
+		// or the dom content loaded, we check minimally that the load event was triggered
+//		DOMContentLoaded,
+		load,
+		firstPaint,
+		firstContentfulPaint,
+		firstImagePaint,
+		firstMeaningfulPaintCandidate,
+		networkAlmostIdle,
+		firstMeaningfulPaint,
+		networkIdle,
+		// custom
+		pageBuilderStable
+	}
+	
 	// TODO: return timing values as well
 	// than we can do some performance testing as well!
 	public ExecuteResult execute(@WebParam(name = "method") String method, 
 			@NotNull @WebParam(name = "url") URI url, @WebParam(name = "part") Part part, @WebParam(name = "javascript") String javascript,
 			@WebParam(name = "timeout") Long timeout, @WebParam(name = "timeoutUnit") TimeUnit timeUnit,
-			@WebParam(name = "asPdf") Boolean asPdf) {
-		
+			@WebParam(name = "asPdf") Boolean asPdf,
+			@WebParam(name = "waitFor") RenderLifeCycle lifecycle) {
 		try {
 			// not sure if this will work when doing stuff like websockets or frequent polling or...
 			boolean waitForNetworkIdle = true;
@@ -114,11 +131,13 @@ public class Services {
 			// Get DevTools service to this tab
 		    ChromeDevToolsService devToolsService = chromeService.createDevToolsService(tab);
 		    
+		    // print the javascript console
+		    StringBuilder console = new StringBuilder();
 		    devToolsService.getConsole().enable();
 		    devToolsService.getConsole().onMessageAdded(new EventHandler<MessageAdded>() {
 				@Override
 				public void onEvent(MessageAdded arg0) {
-					System.out.println("> " + arg0.getMessage().getText());
+					console.append(arg0.getMessage().getText()).append("\n");
 				}
 		    });
 		    
@@ -133,32 +152,33 @@ public class Services {
 			// Get individual commands
 			Page page = devToolsService.getPage();
 			Network network = devToolsService.getNetwork();
-			
-			Tracing tracing = devToolsService.getTracing();
-			tracing.onDataCollected(
-			        event -> {
-			          if (event.getValue() != null) {
-			            System.out.println("----------------------------> trace: " + event.getValue());
-			          }
-			        });
-			tracing.start();
+
+//			Tracing tracing = devToolsService.getTracing();
+//			tracing.onDataCollected(
+//			        event -> {
+//			          if (event.getValue() != null) {
+//			            System.out.println("----------------------------> trace: " + event.getValue());
+//			          }
+//			        });
+//			tracing.start();
 			
 			if (javascript != null) {
 	//			page.addScriptToEvaluateOnLoad(javascript);
 				page.addScriptToEvaluateOnNewDocument(javascript);
 			}
 			// Log requests with onRequestWillBeSent event handler.
-			network.onRequestWillBeSent(new EventHandler<RequestWillBeSent>() {
-				@Override
-				public void onEvent(RequestWillBeSent event) {
-					System.out.printf(
-							"request: %s %s%s",
-							event.getRequest().getMethod(),
-							event.getRequest().getUrl(),
-							System.lineSeparator());
-				}
-			});
+//			network.onRequestWillBeSent(new EventHandler<RequestWillBeSent>() {
+//				@Override
+//				public void onEvent(RequestWillBeSent event) {
+//					System.out.printf(
+//							"request: %s %s%s",
+//							event.getRequest().getMethod(),
+//							event.getRequest().getUrl(),
+//							System.lineSeparator());
+//				}
+//			});
 	
+			// no good
 	//		network.onLoadingFinished(new EventHandler<LoadingFinished>() {
 	//			@Override
 	//			public void onEvent(LoadingFinished arg0) {
@@ -172,24 +192,20 @@ public class Services {
 	//			}
 	//		});
 			
-			network.onRequestIntercepted(new EventHandler<RequestIntercepted>() {
-				@Override
-				public void onEvent(RequestIntercepted event) {
-					String interceptionId = event.getInterceptionId();
-					Map<String, Object> headers = new HashMap<String, Object>();
-				}
-			});
+//			network.onRequestIntercepted(new EventHandler<RequestIntercepted>() {
+//				@Override
+//				public void onEvent(RequestIntercepted event) {
+//					String interceptionId = event.getInterceptionId();
+//					Map<String, Object> headers = new HashMap<String, Object>();
+//				}
+//			});
 			
 			ExecuteResult result = new ExecuteResult();
 			
 			page.setLifecycleEventsEnabled(true);
-			List<Boolean> state = new ArrayList<Boolean>();
 			
-			
-//			String targetState = "firstMeaningfulPaint";
-			String targetState = "firstContentfulPaint";
-	//		String targetState = "firstPaint";
 			/*
+			 * example of lifecycle states
 			 	----------> lifecycle: init
 				----------> lifecycle: DOMContentLoaded
 				----------> lifecycle: load
@@ -206,7 +222,7 @@ public class Services {
 				@Override
 				public void onEvent(LifecycleEvent arg0) {
 					try {
-						System.out.println("--------------> lifecycle: " + arg0.getName());
+//						System.out.println("--------------> lifecycle: " + arg0.getName());
 						LifeCycleResult lifeCycle = new LifeCycleResult();
 						lifeCycle.setName(arg0.getName());
 						lifeCycle.setTime(new Date().getTime() - started.getTime());
@@ -324,7 +340,7 @@ public class Services {
 //			latch.await(timeout, timeUnit == null ? TimeUnit.MILLISECONDS : timeUnit);
 			
 			Runtime runtime = devToolsService.getRuntime();
-			waitForStable(page, runtime, TimeUnit.MILLISECONDS.convert(timeout, timeUnit), result);
+			waitForStable(page, runtime, TimeUnit.MILLISECONDS.convert(timeout, timeUnit), result, lifecycle == null ? RenderLifeCycle.networkIdle : lifecycle);
 			
 			if (asPdf != null && asPdf) {
 				Boolean landscape = false;
@@ -413,6 +429,7 @@ public class Services {
 			devToolsService.close();
 			launcher.close();
 
+			result.setConsoleLog(console.toString());
 			return result;
 		}
 		catch (Throwable e) {
@@ -423,22 +440,31 @@ public class Services {
 //		page.addScriptToEvaluateOnNewDocument(arg0)
 	}
 	
-	public static ExecuteResult waitForStable(Page page, Runtime runtime, Long timeout, ExecuteResult result) {
+	public static ExecuteResult waitForStable(Page page, Runtime runtime, Long timeout, ExecuteResult result, RenderLifeCycle lifecycle) {
 		String targetState = "firstMeaningfulPaint";
 //		String targetState = "firstContentfulPaint";
 //		String targetState = "firstPaint";
 		
 		boolean waitForIdle = true;
 		result.setRenderStart(new Date());
+		// we wait at least 500ms until after the stable state is reached
+		// this was gleaned as a potentially good timeout from an article, they indicated that playwright waits 500ms after "networkIdle"
+		long stateStability = 500;
 		try {
 			boolean concluded = false;
 			while(!concluded) {
 				// we give it some time
 				Thread.sleep(100);
 				
-				if (result.isPageBuilder()) {
+				Date date = new Date();
+				// currently we don't use this
+				// it only scales to our own applications and should only be used as a last resort
+				if (lifecycle.equals(RenderLifeCycle.pageBuilderStable) && result.isPageBuilder() && !result.isStable()) {
 					Evaluate evaluation = runtime.evaluate("application.services.page.stable");
 					result.setStable(Boolean.TRUE.equals(evaluation.getResult().getValue()));
+					if (result.isStable()) {
+						result.setRenderReady(date);
+					}
 				}
 
 				boolean idle = false;
@@ -448,29 +474,40 @@ public class Services {
 				if (lifeCycles != null && !lifeCycles.isEmpty()) {
 					lifeCycles = new ArrayList<LifeCycleResult>(lifeCycles);
 					for (LifeCycleResult cycle : lifeCycles) {
-						if (cycle.getName().equalsIgnoreCase(targetState)) {
-							result.setStable(true);
+						// only update this if the result is not stable yet
+						// otherwise, we keep moving the render ready in the future, never quite achieving nirvana
+						if (cycle.getName().equalsIgnoreCase(lifecycle.name()) && !result.isStable()) {
+							// we only count lifecycles after the load
+							// unless you are interested in the load itself of course...
+							if (lifecycle.equals(RenderLifeCycle.load) || loaded) {
+								result.setRenderReady(date);
+								result.setStable(true);
+							}
 						}
 						else if (cycle.getName().equalsIgnoreCase("load")) {
 							loaded = true;
 						}
 						// only network idles _after_ the load count
-						else if (loaded && cycle.getName().equalsIgnoreCase("networkIdle")) {
+						else if (loaded && cycle.getName().equalsIgnoreCase(RenderLifeCycle.networkIdle.name())) {
 							idle = true;
 						}
 					}
 				}
-				if (timeout != null && new Date().getTime() - result.getRenderStart().getTime() > timeout) {
+				// if we have waited too long, break out
+				if (timeout != null && date.getTime() - result.getRenderStart().getTime() > timeout) {
 					break;
 				}
-				
+				// if we have achieved render readiness and have waited some additional time, we consider it done
+				if (result.getRenderReady() != null && date.getTime() > result.getRenderReady().getTime() + stateStability) {
+					break;
+				}
 				// if we wait for an idle, we wait after it has been stabilized for a network idle event
-				if (waitForIdle) {
-					concluded = result.isStable() && idle;
-				}
-				else {
-					concluded = result.isStable();
-				}
+//				if (waitForIdle) {
+//					concluded = result.isStable() && idle;
+//				}
+//				else {
+//					concluded = result.isStable();
+//				}
 			}
 		}
 		catch (Exception e) {
