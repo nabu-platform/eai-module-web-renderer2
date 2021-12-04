@@ -17,14 +17,19 @@ import javax.jws.WebParam;
 import javax.jws.WebService;
 import javax.validation.constraints.NotNull;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.github.kklisura.cdt.launch.ChromeArguments;
 import com.github.kklisura.cdt.launch.ChromeLauncher;
+import com.github.kklisura.cdt.protocol.commands.Fetch;
 import com.github.kklisura.cdt.protocol.commands.IO;
 import com.github.kklisura.cdt.protocol.commands.Network;
 import com.github.kklisura.cdt.protocol.commands.Page;
 import com.github.kklisura.cdt.protocol.commands.Runtime;
 import com.github.kklisura.cdt.protocol.commands.Tracing;
 import com.github.kklisura.cdt.protocol.events.console.MessageAdded;
+import com.github.kklisura.cdt.protocol.events.fetch.RequestPaused;
 import com.github.kklisura.cdt.protocol.events.log.EntryAdded;
 import com.github.kklisura.cdt.protocol.events.network.LoadingFinished;
 import com.github.kklisura.cdt.protocol.events.network.RequestIntercepted;
@@ -40,7 +45,9 @@ import com.github.kklisura.cdt.services.ChromeDevToolsService;
 import com.github.kklisura.cdt.services.ChromeService;
 import com.github.kklisura.cdt.services.types.ChromeTab;
 
+import be.nabu.utils.mime.api.Header;
 import be.nabu.utils.mime.api.Part;
+import be.nabu.utils.mime.impl.MimeUtils;
 //import javafx.beans.value.ChangeListener;
 //import javafx.beans.value.ObservableValue;
 //import javafx.concurrent.Worker.State;
@@ -58,6 +65,8 @@ import nabu.web.renderer2.types.ExecuteResult.LifeCycleResult;
 @WebService
 public class Services {
 		
+	private Logger logger = LoggerFactory.getLogger(getClass());
+	
 //	private static Thread javaFxThread;
 //
 //	public static class AsNonApp extends Application {
@@ -106,7 +115,8 @@ public class Services {
 			@NotNull @WebParam(name = "url") URI url, @WebParam(name = "part") Part part, @WebParam(name = "javascript") String javascript,
 			@WebParam(name = "timeout") Long timeout, @WebParam(name = "timeoutUnit") TimeUnit timeUnit,
 			@WebParam(name = "asPdf") Boolean asPdf,
-			@WebParam(name = "waitFor") RenderLifeCycle lifecycle) {
+			@WebParam(name = "waitFor") RenderLifeCycle lifecycle,
+			@WebParam(name = "jwtToken") String jwtToken) {
 		try {
 			// not sure if this will work when doing stuff like websockets or frequent polling or...
 			boolean waitForNetworkIdle = true;
@@ -131,6 +141,7 @@ public class Services {
 			// Get DevTools service to this tab
 		    ChromeDevToolsService devToolsService = chromeService.createDevToolsService(tab);
 		    
+		    
 		    // print the javascript console
 		    StringBuilder console = new StringBuilder();
 		    devToolsService.getConsole().enable();
@@ -152,6 +163,51 @@ public class Services {
 			// Get individual commands
 			Page page = devToolsService.getPage();
 			Network network = devToolsService.getNetwork();
+			
+			if (part != null || jwtToken != null) {
+				// TODO: this is deprecated, you have to use Fetch.requestPaused instead
+				Fetch fetch = devToolsService.getFetch();
+				fetch.onRequestPaused(new EventHandler<RequestPaused>() {
+					@Override
+					public void onEvent(RequestPaused arg0) {
+						logger.debug("Intercepting request: " + arg0.getRequest().getUrl());
+						try {
+							URI intercepted = new URI(arg0.getRequest().getUrl());
+							// we only apply our logic to requests that are done to the same domain
+							// if for instance you are including scripts from other domains, we don't want to enrich them
+							if (url.getHost() != null && url.getHost().equals(intercepted.getHost())) {
+								Map<String, Object> headers = arg0.getRequest().getHeaders();
+								if (headers == null) {
+									headers = new HashMap<String, Object>();
+								}
+								if (jwtToken != null) {
+									headers.put("Authorization", "Bearer " + jwtToken);
+								}
+								if (part != null && part.getHeaders() != null) {
+									for (Header header : part.getHeaders()) {
+										headers.put(header.getName(), MimeUtils.getFullHeaderValue(header));
+									}
+								}
+								arg0.getRequest().setHeaders(headers);
+							}
+						}
+						catch (Exception e) {
+							logger.error("Could not check intercepted message: " + arg0.getRequest().getUrl(), e);
+						}
+						finally {
+							devToolsService.getFetch().continueRequest(arg0.getRequestId());
+						}
+					}
+				});
+				fetch.enable();
+			}
+			
+//			network.onRequestIntercepted(new EventHandler<RequestIntercepted>() {
+//				@Override
+//				public void onEvent(RequestIntercepted arg0) {
+//					
+//				}
+//			});
 
 //			Tracing tracing = devToolsService.getTracing();
 //			tracing.onDataCollected(
@@ -166,6 +222,7 @@ public class Services {
 	//			page.addScriptToEvaluateOnLoad(javascript);
 				page.addScriptToEvaluateOnNewDocument(javascript);
 			}
+			
 			// Log requests with onRequestWillBeSent event handler.
 //			network.onRequestWillBeSent(new EventHandler<RequestWillBeSent>() {
 //				@Override
@@ -484,6 +541,9 @@ public class Services {
 								result.setStable(true);
 							}
 						}
+						// we had an edge where the waiting for event was triggered before load
+						// after load, we had to run the timer to get the result back (event hit at 31s, load at 32s, render timeout at 60s)
+						// not sure if there is a logic gap here?
 						else if (cycle.getName().equalsIgnoreCase("load")) {
 							loaded = true;
 						}
