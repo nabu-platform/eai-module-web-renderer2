@@ -130,7 +130,11 @@ public class Services {
 		    		.headless(true)
 		    		.additionalArguments("user-agent", "Nabu-Renderer/1.1")
 		    		.additionalArguments("no-sandbox", true)
+		    		// chrome 111 changed some things to dev tools, it changed /json/new from a GET to a PUT and:
+		    		// Please make sure to start Chrome with --remote-allow-origins=* or a specific origin. Chrome 111 no longer allows DevTools Websocket connections from arbitrary origins.
+		    		.additionalArguments("remote-allow-origins", "*")
 		    		.build();
+		    
 		    // Launch chrome either as headless (true) or regular (false).
 	//	    ChromeService chromeService = launcher.launch(true);
 		    ChromeService chromeService = launcher.launch(arguments);
