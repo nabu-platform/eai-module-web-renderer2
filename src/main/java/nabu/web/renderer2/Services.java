@@ -38,6 +38,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.github.kklisura.cdt.launch.ChromeArguments;
+import com.github.kklisura.cdt.launch.ChromeArguments.Builder;
 import com.github.kklisura.cdt.launch.ChromeLauncher;
 import com.github.kklisura.cdt.protocol.commands.Fetch;
 import com.github.kklisura.cdt.protocol.commands.IO;
@@ -133,7 +134,8 @@ public class Services {
 			@WebParam(name = "timeout") Long timeout, @WebParam(name = "timeoutUnit") TimeUnit timeUnit,
 			@WebParam(name = "asPdf") Boolean asPdf,
 			@WebParam(name = "waitFor") RenderLifeCycle lifecycle,
-			@WebParam(name = "jwtToken") String jwtToken) {
+			@WebParam(name = "jwtToken") String jwtToken,
+			@WebParam(name = "language") String language) {	// must be iso codes for language -> https://stackoverflow.com/questions/49553714/headless-chrome-does-not-send-accept-language-header
 		try {
 			// not sure if this will work when doing stuff like websockets or frequent polling or...
 			boolean waitForNetworkIdle = true;
@@ -143,14 +145,25 @@ public class Services {
 		    
 		    CountDownLatch latch = new CountDownLatch(1);
 		    
-		    ChromeArguments arguments = ChromeArguments.builder()
+		    Builder builder = ChromeArguments.builder()
 		    		.headless(true)
 		    		.additionalArguments("user-agent", "Nabu-Renderer/1.1")
 		    		.additionalArguments("no-sandbox", true)
 		    		// chrome 111 changed some things to dev tools, it changed /json/new from a GET to a PUT and:
 		    		// Please make sure to start Chrome with --remote-allow-origins=* or a specific origin. Chrome 111 no longer allows DevTools Websocket connections from arbitrary origins.
 		    		.additionalArguments("remote-allow-origins", "*")
-		    		.build();
+		    		// by setting incognito we prevent most file storage
+		    		// the below settings that work at the network layer (clear cache and disable cache) do not appear to prevent file storage...
+		    		.incognito();
+		    
+		    if (language != null) {
+		    	builder.additionalArguments("--lang", language);
+		    	builder.additionalArguments("--accept-lang", language);
+		    	builder.additionalArguments("lang", language);
+		    	builder.additionalArguments("accept-lang", language);
+		    }
+		    
+		    ChromeArguments arguments = builder.build();
 		    
 		    // Launch chrome either as headless (true) or regular (false).
 	//	    ChromeService chromeService = launcher.launch(true);
@@ -184,6 +197,10 @@ public class Services {
 			// Get individual commands
 			Page page = devToolsService.getPage();
 			Network network = devToolsService.getNetwork();
+			
+			// by disabling the cache, we prevent disk usage, otherwise it will fill up rapidly in the tmp folder (does nothing? check incognito mode above)
+			network.setCacheDisabled(true);
+			network.clearBrowserCache();
 			
 			if (part != null || jwtToken != null) {
 				// TODO: this is deprecated, you have to use Fetch.requestPaused instead
