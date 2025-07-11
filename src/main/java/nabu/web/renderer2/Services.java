@@ -18,6 +18,7 @@
 package nabu.web.renderer2;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -152,9 +153,13 @@ public class Services {
 		    		// chrome 111 changed some things to dev tools, it changed /json/new from a GET to a PUT and:
 		    		// Please make sure to start Chrome with --remote-allow-origins=* or a specific origin. Chrome 111 no longer allows DevTools Websocket connections from arbitrary origins.
 		    		.additionalArguments("remote-allow-origins", "*")
+		    		// fixate the user directory for maximum reuse
+		    		.userDataDir(new File(System.getProperty("java.io.tmpdir"), "ssr").getAbsolutePath())
 		    		// by setting incognito we prevent most file storage
 		    		// the below settings that work at the network layer (clear cache and disable cache) do not appear to prevent file storage...
-		    		.incognito();
+		    		// does not seem to do much...
+//		    		.incognito()
+		    		;
 		    
 		    if (language != null) {
 		    	builder.additionalArguments("--lang", language);
@@ -199,8 +204,8 @@ public class Services {
 			Network network = devToolsService.getNetwork();
 			
 			// by disabling the cache, we prevent disk usage, otherwise it will fill up rapidly in the tmp folder (does nothing? check incognito mode above)
-			network.setCacheDisabled(true);
-			network.clearBrowserCache();
+//			network.setCacheDisabled(true);
+//			network.clearBrowserCache();
 			
 			if (part != null || jwtToken != null) {
 				// TODO: this is deprecated, you have to use Fetch.requestPaused instead
