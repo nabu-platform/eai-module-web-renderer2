@@ -28,6 +28,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.TimeZone;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -136,7 +137,8 @@ public class Services {
 			@WebParam(name = "asPdf") Boolean asPdf,
 			@WebParam(name = "waitFor") RenderLifeCycle lifecycle,
 			@WebParam(name = "jwtToken") String jwtToken,
-			@WebParam(name = "language") String language) {	// must be iso codes for language -> https://stackoverflow.com/questions/49553714/headless-chrome-does-not-send-accept-language-header
+			@WebParam(name = "language") String language,
+			@WebParam(name = "timezone") TimeZone timezone) {	// must be iso codes for language -> https://stackoverflow.com/questions/49553714/headless-chrome-does-not-send-accept-language-header
 		try {
 			// not sure if this will work when doing stuff like websockets or frequent polling or...
 			boolean waitForNetworkIdle = true;
@@ -180,6 +182,9 @@ public class Services {
 			// Get DevTools service to this tab
 		    ChromeDevToolsService devToolsService = chromeService.createDevToolsService(tab);
 		    
+		    if (timezone != null) {
+		    	devToolsService.getEmulation().setTimezoneOverride(timezone.getID());
+		    }
 		    
 		    // print the javascript console
 		    StringBuilder console = new StringBuilder();
